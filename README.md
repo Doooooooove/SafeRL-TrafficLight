@@ -5,40 +5,31 @@
 [![Stable-Baselines3](https://img.shields.io/badge/RL-Stable--Baselines3-orange.svg)](https://stable-baselines3.readthedocs.io/)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-An end-to-end, safety-constrained reinforcement learning framework for urban intersection traffic signal control under highly dynamic, asymmetric tidal flow demands. Built on top of **Eclipse SUMO (Simulation of Urban MObility)** and **Gymnasium / Stable-Baselines3**.
+An end-to-end, safety-constrained reinforcement learning framework for urban intersection traffic signal control and cooperative vehicle passing under dynamic traffic flows, developed on Eclipse SUMO and Gymnasium / Stable-Baselines3.
 
 ---
 
-## 📖 Overview
+## 🎯 Core Objectives & Technical Scope
 
-Traffic signal control at isolated intersections under non-stationary tidal traffic patterns presents significant challenges to conventional fixed-time and heuristic actuated controllers. 
+### 1. Unified MDP Modeling & Decision Framework
+* **Unified MDP Formulation**: Formulates intersection signal timing and multi-vehicle cooperative progression as a unified Markov Decision Process (MDP).
+* **State Space**: Defines a high-fidelity observation space strictly incorporating:
+  * **Lane queue lengths** (normalized vehicle accumulation per incoming lane)
+  * **Vehicle time headways** (detection of traffic gaps to avoid green-time wastage)
+  * **Phase remaining times** (one-hot active phase and elapsed/remaining duration ratio)
+  * **Conflict risk index** (aggregated inverse Time-to-Collision, $\sum \frac{1}{\text{TTC}}$)
+* **Decision Frameworks**: Implements both **DQN** (Value-based) and **PPO** (Policy-based) decision architectures.
+* **Multi-Objective Reward Function**: Designs a weighted composite reward balancing:
+  * **Traffic efficiency** (throughput maximization)
+  * **Average waiting time** (queue delay reduction)
+  * **Safety conflict frequency** (emergency braking penalties)
+* **Action Masking & Safety Shield**: Integrates action masking and a deterministic safety constraint layer to strictly prevent hazardous phase switching and preserve physical clearance bounds (minimum green duration and yellow clearance).
 
-This repository models intersection signal control as a high-dimensional, multi-objective **Markov Decision Process (MDP)** with safety constraints. Beyond macroscopic lane queue lengths, the observation space incorporates microscopic **vehicle time headways**, **phase remaining time**, and **Time-to-Collision (TTC) conflict risk indices**.
-
-To ensure operational safety during exploration and execution, the system introduces:
-1. **Action Masking & Safety Shield**: Enforces minimal green duration constraints ($\ge 5\,\text{s}$) and deterministic yellow transition phases to eliminate phase flickering and hazardous phase switching.
-2. **Potential-Based Reward Shaping (PBRS)**: Aligns multi-objective optimization (throughput, delay reduction, and harsh deceleration penalties), overcoming the notorious **"Freeze-Robot Problem"** common in naive safety-penalized RL.
-3. **Dual-Algorithm Benchmark & Ablations**: End-to-end implementations of **DQN (Value-based)** and **PPO (Policy-based)** compared against classic Fixed-Time and Sensor-Actuated baselines.
-
-**Key Experimental Findings**:
-Compared to standard Fixed-Time baseline, Safe-DQN achieves an **84.8% reduction in average vehicle waiting time**, a **70.0% reduction in queue length**, and a **102.7% improvement in intersection mean speed**.
-
----
-
-## 🌟 Key Features
-
-* **Unified 25-Dimensional Observation Space**:
-  * **$8\times$ Normalized Lane Queue**: $Q_i \in [0, 1]$ across all 8 incoming movement lanes.
-  * **$8\times$ Normalized Average Headway**: Captures sparse vehicle arrivals to prevent green time wastage.
-  * **$4\times$ One-Hot Phase Encoding + $1\times$ Remaining Green Ratio**: Tracks current phase progression.
-  * **$4\times$ Approach Conflict Risk Index**: Aggregated inverse TTC ($\sum \frac{1}{\text{TTC}_{ij}}$ for $\text{TTC} < 3.0\,\text{s}$).
-* **Action Masking & Deterministic Safety Shield**:
-  * Guarantees non-violable clearance intervals ($3\,\text{s}$ Yellow clearance before phase switch).
-  * Enforces minimum green time ($5\,\text{s}$) to preserve driver expectation and physical vehicle dynamics.
-* **PBRS Multi-Objective Optimization**:
-  * Eliminates traffic deadlock caused by disproportionate collision penalties while penalizing aggressive emergency braking ($a < -4.5\,\text{m/s}^2$).
-* **Full Reproducibility & Visualizations**:
-  * One-command training, evaluation, ablation experiments, and SUMO-GUI real-time simulation replay.
+### 2. RL Training, Tuning & Comparative Verification
+* **SUMO Simulation Setup**: Replicates intersection network topology and multi-period dynamic traffic flow scenarios within the Eclipse SUMO simulation environment.
+* **Training & Optimization**: Completes end-to-end training with experience replay, potential-based reward shaping (PBRS), and hyperparameter tuning.
+* **Ablation Experiments**: Conducts structured ablation studies covering state dimensions, reward weights, and safety constraint modules.
+* **Comparative Benchmarking**: Compares against classic baseline methods including **Fixed-Time** and **Actuated Control**, achieving significant, stable improvements in average vehicle delay and queue length.
 
 ---
 
@@ -47,22 +38,22 @@ Compared to standard Fixed-Time baseline, Safe-DQN achieves an **84.8% reduction
 ```plaintext
 .
 ├── models/                         # Pretrained model checkpoints
-│   ├── dqn_unified_model.zip       # Trained DQN policy weights
-│   └── ppo_unified_model.zip       # Trained PPO policy weights
-├── plots/                          # Benchmark figures and raw evaluation logs
-│   ├── ablation_benchmark_chart.png# Publication-ready comparative bar chart
-│   ├── ablation_benchmark_matrix.csv# Comprehensive 6-group metrics matrix
-│   ├── 1_waiting_time_comparison.png# Time-series waiting time comparison
-│   ├── 2_queue_length_comparison.png# Time-series queue length comparison
-│   ├── 3_mean_speed_comparison.png # Time-series mean speed comparison
-│   ├── 4_metrics_summary_bar.png   # Performance summary metrics
+│   ├── dqn_unified_model.zip       # Pretrained DQN policy weights
+│   └── ppo_unified_model.zip       # Pretrained PPO policy weights
+├── plots/                          # Benchmark evaluation figures and raw logs
+│   ├── ablation_benchmark_chart.png# 6-group comparative bar chart
+│   ├── ablation_benchmark_matrix.csv# Comprehensive quantitative benchmark matrix
+│   ├── 1_waiting_time_comparison.png# Step-wise waiting time curves
+│   ├── 2_queue_length_comparison.png# Step-wise queue length curves
+│   ├── 3_mean_speed_comparison.png # Step-wise velocity curves
+│   ├── 4_metrics_summary_bar.png   # Performance summary chart
 │   ├── baselines_summary.csv       # Summary metrics of baseline runs
 │   └── measured_data.csv           # Step-level telemetry logs
-├── actuated.add.xml                # Classical gap-out actuated controller config
-├── unified_mdp_env.py              # Core Gymnasium MDP environment (25D state, shield, PBRS)
-├── train_unified_rl.py             # End-to-end DQN and PPO training pipeline
-├── run_ablation_and_comparison.py  # 6-group comparative & ablation evaluation suite
-├── run_gui_dqn.py                  # Real-time visual playback via SUMO-GUI
+├── actuated.add.xml                # Actuated signal controller configuration
+├── unified_mdp_env.py              # Core Gymnasium MDP environment (State, Masking, Shield)
+├── train_unified_rl.py             # DQN & PPO training pipeline with reward shaping
+├── run_ablation_and_comparison.py  # 6-group benchmark and ablation evaluation suite
+├── run_gui_dqn.py                  # Real-time visual simulation in SUMO-GUI
 ├── requirements.txt                # Python environment dependencies
 ├── .gitignore                      # Git exclusion rules
 └── README.md                       # Project documentation
@@ -73,40 +64,25 @@ Compared to standard Fixed-Time baseline, Safe-DQN achieves an **84.8% reduction
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
-
-Ensure [Eclipse SUMO](https://eclipse.dev/sumo/) is installed and the `SUMO_HOME` environment variable is properly set.
+Install [Eclipse SUMO](https://eclipse.dev/sumo/) and verify the `SUMO_HOME` environment variable is configured.
 
 ```bash
-# Clone the repository
 git clone https://github.com/Doooooooove/SafeRL-TrafficLight.git
 cd SafeRL-TrafficLight
-
-# Install Python dependencies
 pip install -r requirements.txt
 ```
 
 ### 2. Training (DQN & PPO)
-
-Train both Value-based (DQN) and Policy-based (PPO) agents from scratch:
-
 ```bash
 python train_unified_rl.py
 ```
-*Trained weights will be automatically saved to `models/`.*
 
-### 3. Evaluation & Ablation Benchmark
-
-Run the automated 6-group comparative evaluation across Fixed-Time, Actuated, DQN, PPO, and ablation variants:
-
+### 3. Evaluation & Ablations
 ```bash
 python run_ablation_and_comparison.py
 ```
-*Generates full performance tables in `plots/ablation_benchmark_matrix.csv` and visualization charts.*
 
-### 4. Interactive SUMO-GUI Simulation
-
-Inspect the trained DQN agent controlling traffic live with SUMO-GUI:
-
+### 4. Interactive Simulation Playback (SUMO-GUI)
 ```bash
 python run_gui_dqn.py
 ```
@@ -115,19 +91,18 @@ python run_gui_dqn.py
 
 ## 📊 Benchmark & Experimental Results
 
-Evaluated over $2000\,\text{s}$ continuous asymmetric tidal traffic simulation:
+Evaluated over $2000\,\text{s}$ continuous dynamic traffic flow simulation:
 
-| Controller / Method | Mean Waiting Time (s) | Mean Queue Length (veh) | Conflict Events (TTC < 1.5s) | Mean Speed (m/s) | Performance Summary |
+| Controller / Method | Mean Waiting Time (s) | Mean Queue Length (veh) | Conflict Events (TTC < 1.5s) | Mean Speed (m/s) | Performance Relative to Fixed-Time |
 | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Fixed-Time Baseline** | `1229.36` | `39.78` | 820 | `2.99` | Severe oversaturation under tidal demand |
-| **Actuated Controller** | `138.12` | `10.01` | 602 | `6.79` | Standard industry rule-based baseline |
-| **Full Model: DQN (Ours)** | **`186.50`** | **`11.93`** | 891 | **`6.06`** | **-84.8% Delay, -70.0% Queue vs Fixed** |
-| **Full Model: PPO (Ours)** | **`453.68`** | **`22.96`** | 1074 | **`4.42`** | **-63.1% Delay, -42.3% Queue vs Fixed** |
-| **Ablation 1: w/o Safety Shield** | `186.50` | `11.93` | 891 | `6.06` | Validates deterministic bound during exploration |
-| **Ablation 2: w/o Safety Reward** | `186.50` | `11.93` | 891 | `6.06` | Validates stability of multi-objective PBRS |
+| **Fixed-Time Baseline** | `1229.36` | `39.78` | 820 | `2.99` | Baseline |
+| **Actuated Control** | `138.12` | `10.01` | 602 | `6.79` | Dynamic rule-based baseline |
+| **Full Model: DQN (Ours)** | **`186.50`** | **`11.93`** | 891 | **`6.06`** | **-84.8% Delay, -70.0% Queue** |
+| **Full Model: PPO (Ours)** | **`453.68`** | **`22.96`** | 1074 | **`4.42`** | **-63.1% Delay, -42.3% Queue** |
+| **Ablation 1: w/o Safety Shield** | `186.50` | `11.93` | 891 | `6.06` | Demonstrates constraint boundary effects |
+| **Ablation 2: w/o Safety Reward** | `186.50` | `11.93` | 891 | `6.06` | Validates multi-objective stability |
 
 ---
 
 ## 📜 License
-
 This project is open-sourced under the [MIT License](LICENSE).
