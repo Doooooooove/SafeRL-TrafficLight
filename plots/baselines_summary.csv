@@ -1,0 +1,3 @@
+﻿name,avg_waiting,avg_queue,total_conflicts,avg_speed,total_throughput
+传统定时配时 (Fixed-Time),1229.3625,39.7825,820,2.992218630403863,139
+动态感应控制 (Actuated),138.1175,10.0075,602,6.789422832352739,173
