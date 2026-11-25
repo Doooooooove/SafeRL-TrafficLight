@@ -1,10 +1,14 @@
 {
   "stopped": 1.0,
-  "moving_near": 1.7766413692044043,
-  "moving_far": -0.2,
-  "waiting": 0.4295487779569945,
-  "paired_demand": 0.29715122686893203,
-  "continue_green": 2.5314394568726986,
-  "time_since_service": 0.5317159110683289,
-  "recent_entries": -0.2
+  "moving_near": 1.7172519514143196,
+  "moving_far": -0.8095874667878421,
+  "waiting": 1.2583346878843356,
+  "paired_demand": 1.3603408734648252,
+  "continue_green": 2.0998438118271174,
+  "time_since_service": 0.34659733663027614,
+  "recent_entries": -0.5950004914097471,
+  "approaching": 1.4521028353201344,
+  "continue_discharge": 2.422642175692911,
+  "queue_pressure": -0.8472037952333351,
+  "continue_parallel_discharge": -1.4529506929283478
 }

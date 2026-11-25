@@ -1,8 +1,8 @@
 # SafeRL-TrafficLight
 
-How should a four-way intersection allocate the next green when the busiest approach changes? This SUMO project compares eight controllers on the same vehicle demand. It includes the network, runnable scenarios, three deep RL checkpoints, a learned phase-scoring policy, and per-seed benchmark results.
+How should a four-way intersection allocate the next green when the busiest approach shifts? This Eclipse SUMO benchmark compares eight traffic-signal controllers on identical vehicle demand—including the network, runnable scenarios, three deep RL checkpoints, a 12-feature learned phase-scoring policy, and per-seed evaluation logs.
 
-**中文简介**　在同一个仿真路口、三种车流和八个独立评测种子上，学习型相位评分策略相对上一版队列控制器，将平均停车数降低了 **11.0%–20.1%**。在训练时没见过的随机到达车流中，每辆计划出行车辆的平均累计延误从 **40.84 秒降至 31.78 秒**。同场景的 SUMO 感应控制在延误指标上表现最好，为 **30.59 秒**。
+**中文简介**　在同一个仿真路口、三种车流和八个独立评测种子（1101–1108）上，优化后的 12 特征学习型相位评分策略相对上一版队列控制器（Queue-aware），在 **24/24 全部配对实验** 中同时降低了队列与延误，平均停车数下降 **12.5%–32.5%**。在训练阶段完全未见过的随机到达车流（Stochastic）中，每辆计划出行车辆的平均累计延误从 **40.84 秒降至 26.37 秒（-35.4%）**，较此前表现最好的 SUMO 原生感应控制（**30.59 秒**）再降 **13.8%**，同时取得全场最短平均队列（**11.87 辆**）与最高完成行程数（**1357.4 辆**）。
 
 ## Run the intersection
 
@@ -26,7 +26,7 @@ python run_gui_dqn.py --controller learned-phase --route-file scenario/stochasti
 The intersection has eight incoming lanes, twelve turning movements and four green phases. Agent-controlled signals make a decision every five seconds. The signal enforces two seconds of yellow on a phase change and a minimum of five seconds of green.
 
 - **Predictive control** estimates when vehicles will reach the back of each queue, smooths recent lane entries and forecasts how many vehicles can clear on green. It compares legal phase sequences over four five-second intervals, gives more weight to lanes with longer waits, and applies the first decision before forecasting again.
-- **Learned phase scoring** uses one eight-term score across all four phases. It accounts for stopped vehicles, approaching vehicles within and beyond 75 m, waiting, demand on opposing approaches, retaining green, time since service and recent arrivals. Cross-entropy policy search learns seven weights from closed-loop simulations, with the stopped-vehicle weight fixed at one. The fitted model is a small JSON file. [Inspect the weights](models/phase_policy.json)
+- **Learned phase scoring** evaluates all four phases with a shared 12-term linear score. Alongside the eight core demand and history terms (stopped vehicles, moving vehicles within and beyond 75 m, waiting time, opposing-approach demand, retaining green, time since service, and smoothed recent entries), it adds four arrival-and-discharge terms: time-to-queue-tail approaching demand, capped dischargeable volume when continuing green, long-queue pressure (> 4 stopped vehicles), and parallel opposite-approach discharge on green continuation. Cross-entropy policy search fits 11 weights from closed-loop simulations with the stopped-vehicle weight anchored at 1.0, optimizing queue, accrued delay, and unfinished trips without touching the held-out stochastic benchmark. The fitted model is a 12-line JSON file (backwards-compatible with the legacy 8-weight format). [Inspect the weights](models/phase_policy.json)
 - **Queue-aware control**, the strongest queue baseline in the previous release, uses lane vehicle counts and waiting times, with a small preference for continuing a useful green.
 - **DQN, PPO and Adaptive DQN** use a 25-value observation containing queues, following gaps, phase indicators, a phase timer and closing-risk features. Adaptive DQN uses a masked Double DQN target and queue-controller demonstrations during training.
 - **Fixed-time and actuated control** run their native SUMO programs. The benchmark checks the active program after each reset.
@@ -38,15 +38,15 @@ Each row uses eight matched simulation seeds (1101–1108), starting empty and r
 | Controller | Original queue (veh) ↓ | Alternating queue (veh) ↓ | Stochastic queue (veh) ↓ | Stochastic delay (s/veh) ↓ | Stochastic arrivals ↑ |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Fixed-time | 40.41 | 60.27 | 61.89 | 157.91 | 1194.9 |
-| Actuated | 9.41 | 9.89 | 15.46 | **30.59** | **1351.9** |
+| Actuated | 9.41 | 9.89 | 15.46 | 30.59 | 1351.9 |
 | DQN | 12.05 | 15.88 | 25.26 | 75.26 | 1303.5 |
 | PPO | 24.14 | 21.21 | 23.44 | 67.08 | 1304.6 |
 | Adaptive DQN | 9.82 | 10.22 | 15.47 | 34.96 | 1351.4 |
 | Queue-aware | 8.49 | 9.29 | 17.57 | 40.84 | 1344.3 |
 | Predictive | **7.40** | 7.99 | 14.97 | 34.53 | 1350.4 |
-| Learned phase score | 7.55 | **7.63** | **14.05** | 31.78 | 1350.8 |
+| Learned phase score | 7.42 | **7.71** | **11.87** | **26.37** | **1357.4** |
 
-The learned score had shorter mean queues than the previous queue-aware rule in **all 24 paired runs**. Against that rule, accrued delay per scheduled vehicle fell **9.6%** on the original demand, **15.4%** on alternating demand and **22.2%** on stochastic demand. Predictive control had the shortest queues on the original profile. On stochastic demand, native actuated control had the lowest accrued delay and the most arrivals. These measurements describe one simulated intersection.
+The learned phase scorer beat the previous queue-aware rule on **both mean queue and accrued delay in all 24 paired runs**, cutting mean stopped vehicles by **12.5%–32.5%** and accrued delay per scheduled vehicle by **11.8%** on original demand (`20.86 → 18.40 s`), **15.9%** on alternating demand (`22.41 → 18.85 s`), and **35.4%** on stochastic demand (`40.84 → 26.37 s`). It achieved the **lowest accrued delay across all three scenarios**. On the held-out stochastic profile, it outperformed native SUMO actuated control in **8/8 seeds** on queue (`11.87` vs `15.46`, **-23.2%**) and accrued delay (`26.37` vs `30.59 s`, **-13.8%**), and led on completed trips (`1357.4` vs `1351.9`, **6–1–1** W–T–L) with zero hard-brake samples. Predictive control remained slightly shorter on original-profile mean queue (`7.40` vs `7.42`). These measurements describe one simulated intersection.
 
 ![Comparison of queue, completed trips and accrued delay under random arrivals. Dots are means and bars show one sample standard deviation across eight seeds.](results/stochastic/comparison.png)
 
@@ -69,7 +69,7 @@ The defaults reproduce all eight evaluation seeds. For a short comparison, add `
 
 ### Train a policy
 
-Phase-score training evaluates each candidate on both regular demand profiles. Six generations of 28 candidates use seeds 1800–1805, then three separate seeds (2901–2903) rank the shortlisted policies. The training objective combines stopped vehicles and current waiting time. The predictive controller and phase scorer were checked on development seeds 7, 17, 29 and 37.
+Phase-score training evaluates each candidate on both deterministic demand profiles plus two generated Poisson demand profiles (`balanced` and `varying`) built solely from the original network’s routes. Eight generations of 72 candidates run on seeds `1800–1807` (1,200 s episodes), shortlisted policies are validated on full 2,000 s episodes over seeds `2901–2903`, and local perturbations are refined on development seeds `7, 17, 29, 37`. The ranking objective combines mean queue, accrued delay per scheduled vehicle, and unfinished trip fraction. Both `scenario/stochastic.rou.xml` and evaluation seeds `1101–1108` remain strictly held out.
 
 ```sh
 python train_phase_policy.py --workers 4 --output models/retrained_phase_policy.json
