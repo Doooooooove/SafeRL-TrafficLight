@@ -1,108 +1,73 @@
-﻿# SafeRL-TrafficLight: Safe Multi-Objective Reinforcement Learning for Adaptive Traffic Signal Control
+# SafeRL-TrafficLight
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![SUMO](https://img.shields.io/badge/SUMO-1.20%2B-brightgreen.svg)](https://eclipse.dev/sumo/)
-[![Stable-Baselines3](https://img.shields.io/badge/RL-Stable--Baselines3-orange.svg)](https://stable-baselines3.readthedocs.io/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+A reproducible SUMO experiment for a four-way signalized intersection. Compare three learned policies (DQN, PPO and a demonstration-trained Double DQN), a queue-aware controller, and SUMO’s native fixed-time and actuated programs. The repository includes the network, demand files, trained checkpoints and per-seed results.
 
-An end-to-end, safety-constrained reinforcement learning framework for urban intersection traffic signal control and cooperative vehicle passing under dynamic traffic flows, developed on Eclipse SUMO and Gymnasium / Stable-Baselines3.
+**中文简介**　这个项目比较六种路口信号控制方法。在三个独立评测种子上，新版 DQN 相对原版 DQN 的平均停车数降低了 26.9%（持续南北高峰）和 41.1%（主流向每 500 秒切换）。两个场景的平均到达车辆数也有所增加。
 
----
+## Run the intersection
 
-## 🎯 Core Objectives & Technical Scope
+Install Eclipse SUMO, set `SUMO_HOME` to its installation directory and add its `bin` directory to `PATH`. The native scenario opens directly in SUMO-GUI. Press ▶ to start the simulation. [SUMO installation instructions](https://sumo.dlr.de/docs/Installing/index.html)
 
-### 1. Unified MDP Modeling & Decision Framework
-* **Unified MDP Formulation**: Formulates intersection signal timing and multi-vehicle cooperative progression as a unified Markov Decision Process (MDP).
-* **State Space**: Defines a high-fidelity observation space strictly incorporating:
-  * **Lane queue lengths** (normalized vehicle accumulation per incoming lane)
-  * **Vehicle time headways** (detection of traffic gaps to avoid green-time wastage)
-  * **Phase remaining times** (one-hot active phase and elapsed/remaining duration ratio)
-  * **Conflict risk index** (aggregated inverse Time-to-Collision, $\sum \frac{1}{\text{TTC}}$)
-* **Decision Frameworks**: Implements both **DQN** (Value-based) and **PPO** (Policy-based) decision architectures.
-* **Multi-Objective Reward Function**: Designs a weighted composite reward balancing:
-  * **Traffic efficiency** (throughput maximization)
-  * **Average waiting time** (queue delay reduction)
-  * **Safety conflict frequency** (emergency braking penalties)
-* **Action Masking & Safety Shield**: Integrates action masking and a deterministic safety constraint layer to strictly prevent hazardous phase switching and preserve physical clearance bounds (minimum green duration and yellow clearance).
-
-### 2. RL Training, Tuning & Comparative Verification
-* **SUMO Simulation Setup**: Replicates intersection network topology and multi-period dynamic traffic flow scenarios within the Eclipse SUMO simulation environment.
-* **Training & Optimization**: Completes end-to-end training with experience replay, potential-based reward shaping (PBRS), and hyperparameter tuning.
-* **Ablation Experiments**: Conducts structured ablation studies covering state dimensions, reward weights, and safety constraint modules.
-* **Comparative Benchmarking**: Compares against classic baseline methods including **Fixed-Time** and **Actuated Control**, achieving significant, stable improvements in average vehicle delay and queue length.
-
----
-
-## 📂 Repository Structure
-
-```plaintext
-.
-├── models/                         # Pretrained model checkpoints
-│   ├── dqn_unified_model.zip       # Pretrained DQN policy weights
-│   └── ppo_unified_model.zip       # Pretrained PPO policy weights
-├── plots/                          # Benchmark evaluation figures and raw logs
-│   ├── ablation_benchmark_chart.png# 6-group comparative bar chart
-│   ├── ablation_benchmark_matrix.csv# Comprehensive quantitative benchmark matrix
-│   ├── 1_waiting_time_comparison.png# Step-wise waiting time curves
-│   ├── 2_queue_length_comparison.png# Step-wise queue length curves
-│   ├── 3_mean_speed_comparison.png # Step-wise velocity curves
-│   ├── 4_metrics_summary_bar.png   # Performance summary chart
-│   ├── baselines_summary.csv       # Summary metrics of baseline runs
-│   └── measured_data.csv           # Step-level telemetry logs
-├── actuated.add.xml                # Actuated signal controller configuration
-├── unified_mdp_env.py              # Core Gymnasium MDP environment (State, Masking, Shield)
-├── train_unified_rl.py             # DQN & PPO training pipeline with reward shaping
-├── run_ablation_and_comparison.py  # 6-group benchmark and ablation evaluation suite
-├── run_gui_dqn.py                  # Real-time visual simulation in SUMO-GUI
-├── requirements.txt                # Python environment dependencies
-├── .gitignore                      # Git exclusion rules
-└── README.md                       # Project documentation
-```
-
----
-
-## 🚀 Quick Start
-
-### 1. Prerequisites
-Install [Eclipse SUMO](https://eclipse.dev/sumo/) and verify the `SUMO_HOME` environment variable is configured.
-
-```bash
+```sh
 git clone https://github.com/Doooooooove/SafeRL-TrafficLight.git
 cd SafeRL-TrafficLight
-pip install -r requirements.txt
+sumo-gui -c scenario/single-intersection.sumocfg
 ```
 
-### 2. Training (DQN & PPO)
-```bash
-python train_unified_rl.py
+To watch the learned controller handle alternating demand, install the Python dependencies and start policy playback. The model is included in the clone.
+
+```sh
+python -m pip install -r requirements.txt
+python run_gui_dqn.py --controller adaptive-dqn --route-file scenario/alternating.rou.xml --seconds 2000
 ```
 
-### 3. Evaluation & Ablations
-```bash
-python run_ablation_and_comparison.py
+## What the controllers see and do
+
+The intersection has eight incoming lanes, four green phases and twelve turning movements. Learned policies choose a green phase every five seconds. Their 25 inputs comprise eight normalized queues, eight leader-gap features, four phase indicators, one phase timer and four approach-level closing-risk features. A phase change includes two seconds of yellow and a minimum of five seconds of green. SUMO handles individual vehicle motion.
+
+The **queue-aware controller** scores each phase using the number of approaching vehicles and their lane waiting times. It counts each served lane once, even when right-turn and through movements share it. A small bias toward an occupied current phase avoids spending green time on marginal switches.
+
+The **adaptive DQN** learns from that controller and exploratory actions across both demand patterns. It uses 11,200 simulated decisions, a masked Double DQN target and an auxiliary loss that predicts the teacher’s action. The learning reward favors arrivals and penalizes queues and observed hard braking. At playback the network needs only the 25 inputs. The benchmark also evaluates the original DQN and PPO checkpoints.
+
+## Benchmark
+
+Each cell summarizes three runs from an empty network, with seeds **101, 202 and 303**, 2,000 simulated seconds per run and the same demand file for every controller. The original demand favors north–south traffic during this window. The alternating profile preserves the vehicle rates and swaps the dominant axis every 500 seconds. Training episodes used seeds 10042–10069, and model selection used 7, 17, 29 and 37. The benchmark covers one intersection.
+
+| Controller | Original · stopped vehicles ↓ | Original · arrivals ↑ | Alternating · stopped vehicles ↓ | Alternating · arrivals ↑ |
+| --- | ---: | ---: | ---: | ---: |
+| Fixed-time | 40.56 ± 0.13 | 1145.7 | 60.62 ± 0.18 | 1209.0 |
+| Actuated | 9.30 ± 0.05 | 1363.0 | 9.56 ± 0.11 | **1373.7** |
+| DQN | 12.36 ± 1.25 | 1359.7 | 16.29 ± 1.57 | 1352.3 |
+| PPO | 25.04 ± 1.57 | 1340.7 | 22.45 ± 2.63 | 1332.0 |
+| Adaptive DQN | 9.04 ± 1.00 | 1361.7 | 9.60 ± 0.47 | 1370.7 |
+| Queue-aware | **8.64 ± 0.24** | **1364.0** | **9.37 ± 0.53** | 1369.0 |
+
+The queue-aware rule achieved the shortest mean queues in both profiles. The actuated program served the most arrivals in alternating traffic and recorded the lowest sampled mean waiting time in both profiles. On alternating traffic, adaptive DQN also reduced the mean count of sampled close-following pairs from 1313 to 674 compared with the original DQN.
+
+Stopped vehicles are counted at each five-second decision boundary and averaged over the episode. The ± values are sample standard deviations across seeds. Arrivals count completed trips at every simulation second, including seconds between decisions. Waiting time measures the current waiting spell of vehicles on the network, averaged first across vehicles and then across samples. Vehicles awaiting entry are outside that queue and waiting measurement. A TTC sample counts an incoming follower–leader pair with positive gap, closing speed above 0.5 m/s and time to collision below 1.5 seconds. A pair can contribute at multiple sampling times. Hard-brake samples use acceleration below −4.5 m/s².
+
+![Average queue and completed trips on alternating traffic, with one sample standard deviation across seeds](results/alternating/comparison.png)
+
+Per-seed records and summaries include waiting time, speed, TTC samples and hard braking. The older figures in `plots/` use the previous throughput and waiting-time definitions. [Original-demand runs](results/original/runs.csv) · [Alternating-demand runs](results/alternating/runs.csv) · [Original summary](results/original/summary.csv) · [Alternating summary](results/alternating/summary.csv)
+
+## Reproduce the results
+
+The published runs used Python 3.13.2, SUMO and libsumo 1.27.1, SUMO-RL 1.4.5, Stable-Baselines3 2.9.0 and CPU PyTorch 2.14.0. The commands also work with the standard TraCI backend. For faster headless runs, install the matching libsumo version and set `LIBSUMO_AS_TRACI=1` in the benchmark shell. Use the standard TraCI backend for GUI playback.
+
+```sh
+python run_ablation_and_comparison.py --seeds 101 202 303 --seconds 2000 --output-dir results/original
+python run_ablation_and_comparison.py --seeds 101 202 303 --seconds 2000 --route-file scenario/alternating.rou.xml --output-dir results/alternating
+python -m unittest discover -s tests -v
 ```
 
-### 4. Interactive Simulation Playback (SUMO-GUI)
-```bash
-python run_gui_dqn.py
+To reproduce the new policy, train it with the default seed of 42. Use a separate output path to keep the published checkpoint available for comparison.
+
+```sh
+python train_adaptive_dqn.py --seed 42 --output models/retrained_adaptive_dqn.zip
 ```
 
----
+For online DQN or PPO training with the corrected interval-throughput reward, run `python train_unified_rl.py --algorithm dqn --steps 6000 --output-dir models/retrained` and choose `ppo` for PPO. `--controllers` on the benchmark command selects a subset, for example `--controllers actuated adaptive-dqn queue`.
 
-## 📊 Benchmark & Experimental Results
+## Scenario credits
 
-Evaluated over $2000\,\text{s}$ continuous dynamic traffic flow simulation:
-
-| Controller / Method | Mean Waiting Time (s) | Mean Queue Length (veh) | Conflict Events (TTC < 1.5s) | Mean Speed (m/s) | Performance Relative to Fixed-Time |
-| :--- | :---: | :---: | :---: | :---: | :--- |
-| **Fixed-Time Baseline** | `1229.36` | `39.78` | 820 | `2.99` | Baseline |
-| **Actuated Control** | `138.12` | `10.01` | 602 | `6.79` | Dynamic rule-based baseline |
-| **Full Model: DQN (Ours)** | **`186.50`** | **`11.93`** | 891 | **`6.06`** | **-84.8% Delay, -70.0% Queue** |
-| **Full Model: PPO (Ours)** | **`453.68`** | **`22.96`** | 1074 | **`4.42`** | **-63.1% Delay, -42.3% Queue** |
-| **Ablation 1: w/o Safety Shield** | `186.50` | `11.93` | 891 | `6.06` | Demonstrates constraint boundary effects |
-| **Ablation 2: w/o Safety Reward** | `186.50` | `11.93` | 891 | `6.06` | Validates multi-objective stability |
-
----
-
-## 📜 License
-This project is open-sourced under the [MIT License](LICENSE).
+The intersection network and original traffic routes come from Lucas Alegre’s SUMO-RL 1.4.5 distribution. The alternating scenario shortens the four demand periods to 500 seconds each. [Upstream SUMO-RL](https://github.com/LucasAlegre/sumo-rl) · [Bundled scenario license](scenario/LICENSE.sumo-rl)

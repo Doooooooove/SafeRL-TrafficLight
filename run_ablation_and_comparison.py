@@ -1,147 +1,147 @@
-import os
-import torch
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from stable_baselines3 import DQN, PPO
-from unified_mdp_env import UnifiedMDPIntersectionEnv
+"""Compare traffic-signal controllers on matched SUMO episodes."""
 
-def evaluate_model(env, model, num_steps=400):
-    obs, info = env.reset(seed=42)
-    done = False
-    waits, queues, conflicts, spds, throughs = [], [], [], [], []
-    step = 0
-    while not done and step < num_steps:
-        if model is not None:
-            action, _ = model.predict(obs, deterministic=True)
-        else:
-            action = 0 # baseline fixed
-        obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-        step += 1
-        waits.append(info["system_waiting_time"])
-        queues.append(info.get("system_total_stopped", 0))
-        conflicts.append(info["conflict_count"])
-        spds.append(info.get("system_mean_speed", 0))
-        throughs.append(info["step_throughput"])
-    env.close()
+import argparse
+from pathlib import Path
+
+import pandas as pd
+
+from queue_controller import QueueController
+
+PROJECT_DIR = Path(__file__).resolve().parent
+DEFAULT_ROUTE = PROJECT_DIR / "scenario" / "single-intersection-vhvh.rou.xml"
+CONTROLLERS = ("fixed", "actuated", "dqn", "ppo", "adaptive-dqn", "queue")
+LABELS = {"fixed": "Fixed-time", "actuated": "Actuated", "dqn": "DQN",
+          "ppo": "PPO", "adaptive-dqn": "Adaptive DQN", "queue": "Queue-aware"}
+METRICS = ("mean_queue_veh", "arrivals_veh", "mean_wait_s", "mean_speed_mps",
+           "ttc_pair_samples", "hard_brake_samples")
+INTERVAL = 5
+
+
+def evaluate_episode(controller, model, seed, seconds, begin, route_file):
+    from unified_mdp_env import UnifiedMDPIntersectionEnv
+
+    native = controller in ("fixed", "actuated")
+    program_id = {"fixed": "0", "actuated": "actuated"}.get(controller)
+    additional = ["--no-step-log"]
+    if controller == "actuated":
+        additional.extend(["-a", str(PROJECT_DIR / "actuated.add.xml")])
+    env = UnifiedMDPIntersectionEnv(
+        fixed_ts=native, program_id=program_id, additional_sumo_cmd=additional,
+        sumo_seed=seed, num_seconds=seconds, begin_time=begin,
+        delta_time=INTERVAL, route_file=route_file,
+    )
+    queue_policy = QueueController() if controller == "queue" else None
+    stopped = waiting = speed = 0.0
+    arrivals = near_pairs = hard_brakes = 0
+    try:
+        obs, _ = env.reset(seed=seed)
+        if native:
+            from traci import constants as tc
+
+            tls = env.env.sumo.trafficlight
+            active = tls.getProgram(env.ts_id)
+            logics = {logic.programID: logic.type for logic in tls.getAllProgramLogics(env.ts_id)}
+            expected = tc.TRAFFICLIGHT_TYPE_STATIC if controller == "fixed" else tc.TRAFFICLIGHT_TYPE_ACTUATED
+            if active != program_id or logics.get(active) != expected:
+                raise RuntimeError(f"Expected native {controller} program, got {active!r} ({logics}).")
+
+        for step in range(1, seconds // INTERVAL + 1):
+            if queue_policy is not None:
+                action = queue_policy.predict(env)
+            elif model is not None:
+                action = int(model.predict(obs, deterministic=True)[0].item())
+            else:
+                action = 0  # Ignored by the native signal program.
+            obs, _, terminated, truncated, info = env.step(action)
+            stopped += info["system_total_stopped"]
+            waiting += info["system_mean_waiting_time"]
+            speed += info["system_mean_speed"]
+            arrivals += info["step_throughput"]
+            near_pairs += info["conflict_count"]
+            hard_brakes += info["hard_brakes"]
+            if terminated or truncated:
+                break
+        if info["step"] != begin + seconds:
+            raise RuntimeError(f"Expected end at {begin + seconds}s, reached {info['step']}s.")
+    finally:
+        env.close()
     return {
-        "avg_waiting": np.mean(waits),
-        "avg_queue": np.mean(queues),
-        "total_conflicts": int(np.sum(conflicts)),
-        "avg_speed": np.mean(spds),
-        "total_throughput": int(np.sum(throughs)),
+        "controller": controller, "route": route_file.name, "seed": seed,
+        "begin_s": begin, "duration_s": seconds,
+        "mean_queue_veh": stopped / step, "arrivals_veh": arrivals,
+        "mean_wait_s": waiting / step, "mean_speed_mps": speed / step,
+        "ttc_pair_samples": near_pairs, "hard_brake_samples": hard_brakes,
     }
 
-def run_all_evaluations():
-    print("=" * 70)
-    print("        【全量算法对比与消融实验 (Benchmark & Ablation Study)】")
-    print("=" * 70)
 
-    dqn_path = "D:/SUMO_RL_Project/models/dqn_unified_model.zip"
-    ppo_path = "D:/SUMO_RL_Project/models/ppo_unified_model.zip"
+def save_results(rows, output_dir):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    results = []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    runs = pd.DataFrame(rows)
+    runs.to_csv(output_dir / "runs.csv", index=False)
+    groups = runs.groupby(["controller", "route", "begin_s", "duration_s"], sort=False)
+    summary = groups[list(METRICS)].agg(["mean", "std"])
+    summary.columns = [f"{metric}_{'sd' if stat == 'std' else stat}" for metric, stat in summary.columns]
+    summary.insert(0, "n_seeds", groups.size())
+    summary = summary.reset_index()
+    summary.to_csv(output_dir / "summary.csv", index=False)
 
-    # 1. 传统定时基线 (Fixed-Time)
-    print("[1/6] 评测基线: 传统定时配时 (Fixed-Time)...")
-    env_fixed = UnifiedMDPIntersectionEnv(num_seconds=2000, sumo_seed=42)
-    env_fixed.env.fixed_ts = True
-    r_fixed = evaluate_model(env_fixed, model=None)
-    r_fixed["model_name"] = "基线: 定时配时 (Fixed-Time)"
-    results.append(r_fixed)
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.6), sharey=True, layout="constrained")
+    for ax, metric, xlabel in zip(axes, ("mean_queue_veh", "arrivals_veh"),
+                                  ("Mean stopped vehicles", "Vehicles arriving within horizon")):
+        for row, controller in enumerate(summary["controller"]):
+            mean = summary.loc[row, f"{metric}_mean"]
+            sd = summary.loc[row, f"{metric}_sd"]
+            color = "#087e80" if controller in ("queue", "adaptive-dqn") else "#47566a"
+            ax.errorbar(mean, row, xerr=sd if pd.notna(sd) else None, fmt="o",
+                        color=color, capsize=3, markersize=6)
+        ax.set_xlabel(xlabel)
+        ax.grid(axis="x", alpha=0.25)
+        ax.set_axisbelow(True)
+        ax.spines[["top", "right"]].set_visible(False)
+    axes[0].set_yticks(range(len(summary)), summary["controller"].map(LABELS))
+    axes[0].invert_yaxis()
+    fig.savefig(output_dir / "comparison.png", dpi=170)
+    plt.close(fig)
+    print(summary[["controller", "n_seeds", "mean_queue_veh_mean", "arrivals_veh_mean"]].to_string(index=False))
 
-    # 2. 传统动态感应控制 (Actuated)
-    print("[2/6] 评测基线: 动态感应控制 (Actuated Control)...")
-    env_act = UnifiedMDPIntersectionEnv(
-        num_seconds=2000, sumo_seed=42, additional_sumo_cmd="-a D:/SUMO_RL_Project/actuated.add.xml"
-    )
-    env_act.env.fixed_ts = True
-    env_act.reset(seed=42)
-    ts = env_act.env.unwrapped.traffic_signals[env_act.ts_id]
-    ts.sumo.trafficlight.setProgram(ts.id, "actuated")
-    r_act = evaluate_model(env_act, model=None)
-    r_act["model_name"] = "基线: 感应控制 (Actuated)"
-    results.append(r_act)
 
-    # 3. DQN 统一智能体 (完整模型)
-    print("[3/6] 评测算法: 完整 DQN 智能体 (Ours)...")
-    dqn_model = DQN.load(dqn_path)
-    env_dqn = UnifiedMDPIntersectionEnv(num_seconds=2000, sumo_seed=42)
-    r_dqn = evaluate_model(env_dqn, dqn_model)
-    r_dqn["model_name"] = "完整模型: DQN (Ours)"
-    results.append(r_dqn)
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--seeds", nargs="+", type=int, default=[101, 202, 303])
+    parser.add_argument("--seconds", type=int, default=2000, help="Episode length in seconds (multiple of 5).")
+    parser.add_argument("--begin", type=int, default=0, help="SUMO start time in seconds.")
+    parser.add_argument("--controllers", nargs="+", choices=CONTROLLERS, default=CONTROLLERS)
+    parser.add_argument("--route-file", type=Path, default=DEFAULT_ROUTE)
+    parser.add_argument("--output-dir", type=Path, default=PROJECT_DIR / "results")
+    args = parser.parse_args()
+    if args.seconds <= 0 or args.seconds % INTERVAL or args.begin < 0:
+        parser.error("--seconds must be a positive multiple of 5 and --begin nonnegative.")
+    if len(set(args.seeds)) != len(args.seeds) or min(args.seeds) < 0:
+        parser.error("--seeds must be distinct, nonnegative integers.")
+    if len(set(args.controllers)) != len(args.controllers):
+        parser.error("Each controller may only appear once.")
+    route_file = args.route_file.resolve()
+    if not route_file.is_file():
+        parser.error(f"Route file does not exist: {route_file}")
 
-    # 4. PPO 统一智能体 (完整模型)
-    print("[4/6] 评测算法: 完整 PPO 智能体 (Ours)...")
-    ppo_model = PPO.load(ppo_path)
-    env_ppo = UnifiedMDPIntersectionEnv(num_seconds=2000, sumo_seed=42)
-    r_ppo = evaluate_model(env_ppo, ppo_model)
-    r_ppo["model_name"] = "完整模型: PPO (Ours)"
-    results.append(r_ppo)
+    rows = []
+    for controller in args.controllers:
+        model = None
+        if controller in ("dqn", "ppo", "adaptive-dqn"):
+            from stable_baselines3 import DQN, PPO
 
-    # 5. 消融实验 1: 移除安全约束层 (w/o Safety Shield)
-    print("[5/6] 消融实验 1: 移除安全约束层 (w/o Safety Shield)...")
-    env_no_shield = UnifiedMDPIntersectionEnv(num_seconds=2000, enable_safety_shield=False, sumo_seed=42)
-    r_no_shield = evaluate_model(env_no_shield, dqn_model)
-    r_no_shield["model_name"] = "消融: 无安全约束层 (w/o Shield)"
-    results.append(r_no_shield)
+            algorithm = PPO if controller == "ppo" else DQN
+            filename = "adaptive_dqn.zip" if controller == "adaptive-dqn" else f"{controller}_unified_model.zip"
+            model = algorithm.load(PROJECT_DIR / "models" / filename, device="cpu")
+        for seed in args.seeds:
+            print(f"{LABELS[controller]} | seed {seed} | {args.seconds} s", flush=True)
+            rows.append(evaluate_episode(controller, model, seed, args.seconds, args.begin, route_file))
+    save_results(rows, args.output_dir)
 
-    # 6. 消融实验 2: 奖励函数移除安全冲突惩罚 (w/o Safety Reward)
-    print("[6/6] 消融实验 2: 移除安全冲突惩罚 (w3=0, w/o Safety Reward)...")
-    env_no_sec_rew = UnifiedMDPIntersectionEnv(num_seconds=2000, w_conflict=0.0, sumo_seed=42)
-    r_no_sec_rew = evaluate_model(env_no_sec_rew, dqn_model)
-    r_no_sec_rew["model_name"] = "消融: 移除安全惩罚 (w3=0)"
-    results.append(r_no_sec_rew)
-
-    # 构造 DataFrame
-    df = pd.DataFrame(results)
-    cols = ["model_name", "avg_waiting", "avg_queue", "total_conflicts", "avg_speed", "total_throughput"]
-    df = df[cols]
-    csv_out = "D:/SUMO_RL_Project/plots/ablation_benchmark_matrix.csv"
-    df.to_csv(csv_out, index=False, encoding="utf-8-sig")
-
-    print("\n" + "=" * 85)
-    print("                    【全量算法对比与消融实验成果矩阵】")
-    print("=" * 85)
-    print(f"{'模型/实验组':<30} | {'平均等待(s)':<12} | {'平均排队(辆)':<12} | {'安全冲突(次)':<12} | {'车速(m/s)':<10}")
-    print("-" * 85)
-    for _, row in df.iterrows():
-        print(f"{row['model_name']:<30} | {row['avg_waiting']:<12.2f} | {row['avg_queue']:<12.2f} | {row['total_conflicts']:<12} | {row['avg_speed']:<10.2f}")
-    print("=" * 85)
-
-    # 绘制高精度消融与对比柱状图
-    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
-    plt.rcParams['axes.unicode_minus'] = False
-
-    fig, axes = plt.subplots(1, 3, figsize=(15, 5), dpi=300)
-    names = ["定时配时", "感应控制", "DQN(全)", "PPO(全)", "无安全层", "无安全奖"]
-    colors = ['#ff7675', '#fdcb6e', '#00b894', '#0984e3', '#e17055', '#d63031']
-
-    # 1. 等待时间
-    axes[0].bar(names, df['avg_waiting'], color=colors, edgecolor='black')
-    axes[0].set_title("平均车辆等待时间 (s)", fontsize=12, fontweight='bold')
-    axes[0].tick_params(axis='x', rotation=30)
-    axes[0].grid(axis='y', linestyle=':', alpha=0.7)
-
-    # 2. 排队长度
-    axes[1].bar(names, df['avg_queue'], color=colors, edgecolor='black')
-    axes[1].set_title("平均排队停顿车数 (辆)", fontsize=12, fontweight='bold')
-    axes[1].tick_params(axis='x', rotation=30)
-    axes[1].grid(axis='y', linestyle=':', alpha=0.7)
-
-    # 3. 安全冲突次数
-    axes[2].bar(names, df['total_conflicts'], color=colors, edgecolor='black')
-    axes[2].set_title("安全冲突总次数 (TTC<1.5s)", fontsize=12, fontweight='bold')
-    axes[2].tick_params(axis='x', rotation=30)
-    axes[2].grid(axis='y', linestyle=':', alpha=0.7)
-
-    plt.suptitle("全维度算法对比与消融实验分析 (Benchmark & Ablation Study)", fontsize=14, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plot_out = "D:/SUMO_RL_Project/plots/ablation_benchmark_chart.png"
-    plt.savefig(plot_out)
-    plt.close()
-    print(f"[+] 综合对比与消融图表已生成至: {plot_out}")
 
 if __name__ == "__main__":
-    run_all_evaluations()
+    main()

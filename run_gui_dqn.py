@@ -1,44 +1,43 @@
-import os
-import sumo_rl
-from stable_baselines3 import DQN
+"""Watch a controller operate the bundled intersection in SUMO-GUI."""
 
-def run_gui_dqn(num_seconds=1000):
-    """
-    弹窗打开 SUMO-GUI 观看训练好的 DQN 智能体实时指挥交通
-    """
-    net_dir = os.path.join(os.path.dirname(sumo_rl.__file__), "nets", "2way-single-intersection")
-    net_file = os.path.join(net_dir, "single-intersection.net.xml")
-    route_file = os.path.join(net_dir, "single-intersection-vhvh.rou.xml")
-    model_path = "D:/SUMO_RL_Project/dqn_sumo_model.zip"
+import argparse
+from pathlib import Path
 
-    print("[*] 正在加载训练好的 DQN 模型...")
-    model = DQN.load(model_path)
+from stable_baselines3 import DQN, PPO
 
-    print("[*] 正在拉起 SUMO-GUI 视窗...")
-    env = sumo_rl.SumoEnvironment(
-        net_file=net_file,
-        route_file=route_file,
-        use_gui=True,                   # 弹出图形界面
-        num_seconds=num_seconds,
-        single_agent=True,
-        fixed_ts=False,                 # 智能体自主控制
-        delta_time=5,
-        min_green=5,
-        sumo_seed=42,
-        additional_sumo_cmd="--delay 60", # 60ms 慢放，方便肉眼观察
+from queue_controller import QueueController
+from unified_mdp_env import UnifiedMDPIntersectionEnv
+
+
+def run_gui_dqn(num_seconds=1000, controller="dqn", seed=42, use_gui=True, route_file=None):
+    if controller == "queue":
+        policy = QueueController()
+    else:
+        filename = "adaptive_dqn.zip" if controller == "adaptive-dqn" else f"{controller}_unified_model.zip"
+        path = Path(__file__).resolve().parent / "models" / filename
+        policy = (PPO if controller == "ppo" else DQN).load(path, device="cpu")
+    env = UnifiedMDPIntersectionEnv(
+        use_gui=use_gui, num_seconds=num_seconds, sumo_seed=seed, route_file=route_file,
+        additional_sumo_cmd="--delay 60" if use_gui else None,
     )
+    try:
+        obs, _ = env.reset(seed=seed)
+        while True:
+            action = policy.predict(env) if controller == "queue" else policy.predict(obs, deterministic=True)[0]
+            obs, _, terminated, truncated, _ = env.step(action)
+            if terminated or truncated:
+                break
+    finally:
+        env.close()
 
-    obs, info = env.reset(seed=42)
-    done = False
-
-    print("[*] 仿真正在播放中，注意观察智能体如何根据排队灵活切灯...")
-    while not done:
-        action, _ = model.predict(obs, deterministic=True)
-        obs, reward, terminated, truncated, info = env.step(action)
-        done = terminated or truncated
-
-    env.close()
-    print("[*] 演示播放结束。")
 
 if __name__ == "__main__":
-    run_gui_dqn()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--controller", choices=("dqn", "ppo", "adaptive-dqn", "queue"), default="dqn")
+    parser.add_argument("--seconds", type=int, default=1000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--route-file", type=Path, help="Override the bundled traffic demand.")
+    args = parser.parse_args()
+    if args.seconds <= 0:
+        parser.error("--seconds must be positive")
+    run_gui_dqn(args.seconds, args.controller, args.seed, route_file=args.route_file)
