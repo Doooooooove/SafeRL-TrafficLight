@@ -1,12 +1,15 @@
 from pathlib import Path
+from math import dist
 import shlex
 
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
 import sumo_rl
+from sumo_rl.environment.env import LIBSUMO
 from sumo_rl.environment.observations import ObservationFunction
 from sumo_rl.environment.traffic_signal import TrafficSignal
+from traci import constants as tc
 
 
 class _SumoArguments(list):
@@ -20,12 +23,40 @@ class _CountingEnvironment(sumo_rl.SumoEnvironment):
     def __init__(self, *args, program_id=None, **kwargs):
         self.program_id = program_id
         self.interval_arrivals = 0
+        self.vehicle_sample = None
         super().__init__(*args, **kwargs)
 
     def _start_simulation(self):
         super()._start_simulation()
         if self.program_id is not None:
             self.sumo.trafficlight.setProgram(self.ts_ids[0], self.program_id)
+        if not LIBSUMO:
+            # One subscription covers this intersection and every lane in its network.
+            lower, upper = self.sumo.simulation.getNetBoundary()
+            self.sumo.junction.subscribeContext(
+                self.ts_ids[0], tc.CMD_GET_VEHICLE_VARIABLE, dist(lower, upper) + 1.0,
+                (tc.VAR_SPEED, tc.VAR_WAITING_TIME, tc.VAR_ACCELERATION),
+            )
+
+    def _compute_observations(self):
+        if not LIBSUMO:
+            self.vehicle_sample = self.sumo.junction.getContextSubscriptionResults(self.ts_ids[0])
+        return super()._compute_observations()
+
+    def _get_system_info(self):
+        if self.vehicle_sample is None:
+            return super()._get_system_info()
+        vehicles = self.sumo.vehicle.getIDList()
+        if any(v not in self.vehicle_sample for v in vehicles):
+            return super()._get_system_info()
+        speeds = [self.vehicle_sample[v][tc.VAR_SPEED] for v in vehicles]
+        waits = [self.vehicle_sample[v][tc.VAR_WAITING_TIME] for v in vehicles]
+        return {
+            "system_total_stopped": sum(speed < 0.1 for speed in speeds),
+            "system_total_waiting_time": sum(waits),
+            "system_mean_waiting_time": np.mean(waits) if waits else 0.0,
+            "system_mean_speed": np.mean(speeds) if speeds else 0.0,
+        }
 
     def _sumo_step(self):
         super()._sumo_step()
@@ -51,13 +82,15 @@ class UnifiedIntersectionObservation(ObservationFunction):
         self.conflict_count = 0
         self.hard_brakes = 0
         vehicle = self.ts.sumo.vehicle
-        speeds = {}
+        samples = getattr(self.ts.env, "vehicle_sample", None) or {}
+        speeds = {v: row[tc.VAR_SPEED] for v, row in samples.items()}
 
         for lane in self.ts.lanes:
             vehicles = self.ts.sumo.lane.getLastStepVehicleIDs(lane)
             gaps = []
             for i, veh_id in enumerate(vehicles):
-                self.hard_brakes += int(vehicle.getAcceleration(veh_id) < -4.5)
+                acc = samples[veh_id][tc.VAR_ACCELERATION] if veh_id in samples else vehicle.getAcceleration(veh_id)
+                self.hard_brakes += int(acc < -4.5)
                 leader = vehicle.getLeader(veh_id)
                 if not leader or not leader[0]:
                     continue

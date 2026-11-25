@@ -1,0 +1,10 @@
+{
+  "stopped": 1.0,
+  "moving_near": 1.7766413692044043,
+  "moving_far": -0.2,
+  "waiting": 0.4295487779569945,
+  "paired_demand": 0.29715122686893203,
+  "continue_green": 2.5314394568726986,
+  "time_since_service": 0.5317159110683289,
+  "recent_entries": -0.2
+}

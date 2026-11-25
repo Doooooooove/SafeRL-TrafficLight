@@ -1,12 +1,12 @@
 # SafeRL-TrafficLight
 
-A reproducible SUMO experiment for a four-way signalized intersection. Compare three learned policies (DQN, PPO and a demonstration-trained Double DQN), a queue-aware controller, and SUMO’s native fixed-time and actuated programs. The repository includes the network, demand files, trained checkpoints and per-seed results.
+How should a four-way intersection allocate the next green when the busiest approach changes? This SUMO project compares eight controllers on the same vehicle demand. It includes the network, runnable scenarios, three deep RL checkpoints, a learned phase-scoring policy, and per-seed benchmark results.
 
-**中文简介**　这个项目比较六种路口信号控制方法。在三个独立评测种子上，新版 DQN 相对原版 DQN 的平均停车数降低了 26.9%（持续南北高峰）和 41.1%（主流向每 500 秒切换）。两个场景的平均到达车辆数也有所增加。
+**中文简介**　在同一个仿真路口、三种车流和八个独立评测种子上，学习型相位评分策略相对上一版队列控制器，将平均停车数降低了 **11.0%–20.1%**。在训练时没见过的随机到达车流中，每辆计划出行车辆的平均累计延误从 **40.84 秒降至 31.78 秒**。同场景的 SUMO 感应控制在延误指标上表现最好，为 **30.59 秒**。
 
 ## Run the intersection
 
-Install Eclipse SUMO, set `SUMO_HOME` to its installation directory and add its `bin` directory to `PATH`. The native scenario opens directly in SUMO-GUI. Press ▶ to start the simulation. [SUMO installation instructions](https://sumo.dlr.de/docs/Installing/index.html)
+Install Eclipse SUMO, set `SUMO_HOME` to its installation directory and add its `bin` directory to `PATH`. The supplied configuration opens a fixed-time simulation. Press ▶ in SUMO-GUI to start it. [SUMO installation instructions](https://sumo.dlr.de/docs/Installing/index.html)
 
 ```sh
 git clone https://github.com/Doooooooove/SafeRL-TrafficLight.git
@@ -14,60 +14,69 @@ cd SafeRL-TrafficLight
 sumo-gui -c scenario/single-intersection.sumocfg
 ```
 
-To watch the learned controller handle alternating demand, install the Python dependencies and start policy playback. The model is included in the clone.
+For live playback of the learned policy under random arrivals, install the Python dependencies and run the playback script. Choose `--controller predictive` to see the 20-second forecast controller on the same demand.
 
 ```sh
 python -m pip install -r requirements.txt
-python run_gui_dqn.py --controller adaptive-dqn --route-file scenario/alternating.rou.xml --seconds 2000
+python run_gui_dqn.py --controller learned-phase --route-file scenario/stochastic.rou.xml --seconds 2000 --seed 1101
 ```
 
-## What the controllers see and do
+## How the signals decide
 
-The intersection has eight incoming lanes, four green phases and twelve turning movements. Learned policies choose a green phase every five seconds. Their 25 inputs comprise eight normalized queues, eight leader-gap features, four phase indicators, one phase timer and four approach-level closing-risk features. A phase change includes two seconds of yellow and a minimum of five seconds of green. SUMO handles individual vehicle motion.
+The intersection has eight incoming lanes, twelve turning movements and four green phases. Agent-controlled signals make a decision every five seconds. The signal enforces two seconds of yellow on a phase change and a minimum of five seconds of green.
 
-The **queue-aware controller** scores each phase using the number of approaching vehicles and their lane waiting times. It counts each served lane once, even when right-turn and through movements share it. A small bias toward an occupied current phase avoids spending green time on marginal switches.
-
-The **adaptive DQN** learns from that controller and exploratory actions across both demand patterns. It uses 11,200 simulated decisions, a masked Double DQN target and an auxiliary loss that predicts the teacher’s action. The learning reward favors arrivals and penalizes queues and observed hard braking. At playback the network needs only the 25 inputs. The benchmark also evaluates the original DQN and PPO checkpoints.
+- **Predictive control** estimates when vehicles will reach the back of each queue, smooths recent lane entries and forecasts how many vehicles can clear on green. It compares legal phase sequences over four five-second intervals, gives more weight to lanes with longer waits, and applies the first decision before forecasting again.
+- **Learned phase scoring** uses one eight-term score across all four phases. It accounts for stopped vehicles, approaching vehicles within and beyond 75 m, waiting, demand on opposing approaches, retaining green, time since service and recent arrivals. Cross-entropy policy search learns seven weights from closed-loop simulations, with the stopped-vehicle weight fixed at one. The fitted model is a small JSON file. [Inspect the weights](models/phase_policy.json)
+- **Queue-aware control**, the strongest queue baseline in the previous release, uses lane vehicle counts and waiting times, with a small preference for continuing a useful green.
+- **DQN, PPO and Adaptive DQN** use a 25-value observation containing queues, following gaps, phase indicators, a phase timer and closing-risk features. Adaptive DQN uses a masked Double DQN target and queue-controller demonstrations during training.
+- **Fixed-time and actuated control** run their native SUMO programs. The benchmark checks the active program after each reset.
 
 ## Benchmark
 
-Each cell summarizes three runs from an empty network, with seeds **101, 202 and 303**, 2,000 simulated seconds per run and the same demand file for every controller. The original demand favors north–south traffic during this window. The alternating profile preserves the vehicle rates and swaps the dominant axis every 500 seconds. Training episodes used seeds 10042–10069, and model selection used 7, 17, 29 and 37. The benchmark covers one intersection.
+Each row uses eight matched simulation seeds (1101–1108), starting empty and running for 2,000 seconds. The original demand favors north–south traffic throughout that window. The alternating scenario changes the dominant axis every 500 seconds. The stochastic scenario uses the same alternating rates with per-second Bernoulli arrivals. It was reserved for evaluation. All eight controllers received the same number of scheduled vehicles for each scenario and seed.
 
-| Controller | Original · stopped vehicles ↓ | Original · arrivals ↑ | Alternating · stopped vehicles ↓ | Alternating · arrivals ↑ |
-| --- | ---: | ---: | ---: | ---: |
-| Fixed-time | 40.56 ± 0.13 | 1145.7 | 60.62 ± 0.18 | 1209.0 |
-| Actuated | 9.30 ± 0.05 | 1363.0 | 9.56 ± 0.11 | **1373.7** |
-| DQN | 12.36 ± 1.25 | 1359.7 | 16.29 ± 1.57 | 1352.3 |
-| PPO | 25.04 ± 1.57 | 1340.7 | 22.45 ± 2.63 | 1332.0 |
-| Adaptive DQN | 9.04 ± 1.00 | 1361.7 | 9.60 ± 0.47 | 1370.7 |
-| Queue-aware | **8.64 ± 0.24** | **1364.0** | **9.37 ± 0.53** | 1369.0 |
+| Controller | Original queue (veh) ↓ | Alternating queue (veh) ↓ | Stochastic queue (veh) ↓ | Stochastic delay (s/veh) ↓ | Stochastic arrivals ↑ |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Fixed-time | 40.41 | 60.27 | 61.89 | 157.91 | 1194.9 |
+| Actuated | 9.41 | 9.89 | 15.46 | **30.59** | **1351.9** |
+| DQN | 12.05 | 15.88 | 25.26 | 75.26 | 1303.5 |
+| PPO | 24.14 | 21.21 | 23.44 | 67.08 | 1304.6 |
+| Adaptive DQN | 9.82 | 10.22 | 15.47 | 34.96 | 1351.4 |
+| Queue-aware | 8.49 | 9.29 | 17.57 | 40.84 | 1344.3 |
+| Predictive | **7.40** | 7.99 | 14.97 | 34.53 | 1350.4 |
+| Learned phase score | 7.55 | **7.63** | **14.05** | 31.78 | 1350.8 |
 
-The queue-aware rule achieved the shortest mean queues in both profiles. The actuated program served the most arrivals in alternating traffic and recorded the lowest sampled mean waiting time in both profiles. On alternating traffic, adaptive DQN also reduced the mean count of sampled close-following pairs from 1313 to 674 compared with the original DQN.
+The learned score had shorter mean queues than the previous queue-aware rule in **all 24 paired runs**. Against that rule, accrued delay per scheduled vehicle fell **9.6%** on the original demand, **15.4%** on alternating demand and **22.2%** on stochastic demand. Predictive control had the shortest queues on the original profile. On stochastic demand, native actuated control had the lowest accrued delay and the most arrivals. These measurements describe one simulated intersection.
 
-Stopped vehicles are counted at each five-second decision boundary and averaged over the episode. The ± values are sample standard deviations across seeds. Arrivals count completed trips at every simulation second, including seconds between decisions. Waiting time measures the current waiting spell of vehicles on the network, averaged first across vehicles and then across samples. Vehicles awaiting entry are outside that queue and waiting measurement. A TTC sample counts an incoming follower–leader pair with positive gap, closing speed above 0.5 m/s and time to collision below 1.5 seconds. A pair can contribute at multiple sampling times. Hard-brake samples use acceleration below −4.5 m/s².
+![Comparison of queue, completed trips and accrued delay under random arrivals. Dots are means and bars show one sample standard deviation across eight seeds.](results/stochastic/comparison.png)
 
-![Average queue and completed trips on alternating traffic, with one sample standard deviation across seeds](results/alternating/comparison.png)
+**Queue** is the number of vehicles moving below 0.1 m/s across the network, sampled every five seconds and averaged over the episode. **Arrivals** count completed trips at every simulation second. **Accrued delay** sums SUMO departure delay and in-network time loss through the cutoff and divides by the number of scheduled vehicles. It includes vehicles waiting to enter, vehicles still driving and completed trips. The CSVs also report sampled current waiting spells, speed, TTC pair samples and hard braking. A following pair can contribute to multiple TTC samples. The older figures in `plots/` use earlier metric definitions.
 
-Per-seed records and summaries include waiting time, speed, TTC samples and hard braking. The older figures in `plots/` use the previous throughput and waiting-time definitions. [Original-demand runs](results/original/runs.csv) · [Alternating-demand runs](results/alternating/runs.csv) · [Original summary](results/original/summary.csv) · [Alternating summary](results/alternating/summary.csv)
+Each results folder contains the per-seed runs, summary with sample standard deviations, and chart. [Original](results/original) · [Alternating](results/alternating) · [Stochastic](results/stochastic)
 
 ## Reproduce the results
 
-The published runs used Python 3.13.2, SUMO and libsumo 1.27.1, SUMO-RL 1.4.5, Stable-Baselines3 2.9.0 and CPU PyTorch 2.14.0. The commands also work with the standard TraCI backend. For faster headless runs, install the matching libsumo version and set `LIBSUMO_AS_TRACI=1` in the benchmark shell. Use the standard TraCI backend for GUI playback.
+The published runs used Python 3.13.2, SUMO and libsumo 1.27.1, SUMO-RL 1.4.5, Stable-Baselines3 2.9.0 and CPU PyTorch 2.14.0. Standard TraCI works for both benchmarking and GUI playback. To speed up headless runs, install the matching libsumo version and set `LIBSUMO_AS_TRACI=1` in the benchmark shell. Use a standard TraCI shell for GUI playback.
 
 ```sh
-python run_ablation_and_comparison.py --seeds 101 202 303 --seconds 2000 --output-dir results/original
-python run_ablation_and_comparison.py --seeds 101 202 303 --seconds 2000 --route-file scenario/alternating.rou.xml --output-dir results/alternating
+python run_ablation_and_comparison.py --output-dir results/original
+python run_ablation_and_comparison.py --route-file scenario/alternating.rou.xml --output-dir results/alternating
+python run_ablation_and_comparison.py --route-file scenario/stochastic.rou.xml --output-dir results/stochastic
 python -m unittest discover -s tests -v
 ```
 
-To reproduce the new policy, train it with the default seed of 42. Use a separate output path to keep the published checkpoint available for comparison.
+The defaults reproduce all eight evaluation seeds. For a short comparison, add `--seeds 1101 --controllers actuated queue predictive learned-phase`. The runner checks each episode’s completed-trip count against SUMO’s trip log.
+
+### Train a policy
+
+Phase-score training evaluates each candidate on both regular demand profiles. Six generations of 28 candidates use seeds 1800–1805, then three separate seeds (2901–2903) rank the shortlisted policies. The training objective combines stopped vehicles and current waiting time. The predictive controller and phase scorer were checked on development seeds 7, 17, 29 and 37.
 
 ```sh
+python train_phase_policy.py --workers 4 --output models/retrained_phase_policy.json
 python train_adaptive_dqn.py --seed 42 --output models/retrained_adaptive_dqn.zip
+python train_unified_rl.py --algorithm dqn --steps 6000 --output-dir models/retrained
 ```
-
-For online DQN or PPO training with the corrected interval-throughput reward, run `python train_unified_rl.py --algorithm dqn --steps 6000 --output-dir models/retrained` and choose `ppo` for PPO. `--controllers` on the benchmark command selects a subset, for example `--controllers actuated adaptive-dqn queue`.
 
 ## Scenario credits
 
-The intersection network and original traffic routes come from Lucas Alegre’s SUMO-RL 1.4.5 distribution. The alternating scenario shortens the four demand periods to 500 seconds each. [Upstream SUMO-RL](https://github.com/LucasAlegre/sumo-rl) · [Bundled scenario license](scenario/LICENSE.sumo-rl)
+The intersection network and original traffic routes come from Lucas Alegre’s SUMO-RL 1.4.5 distribution. The two additional scenarios adapt its demand periods and arrival process. [Upstream SUMO-RL](https://github.com/LucasAlegre/sumo-rl) · [Scenario license](scenario/LICENSE.sumo-rl)

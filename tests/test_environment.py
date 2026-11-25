@@ -9,6 +9,44 @@ import xml.etree.ElementTree as ET
 
 @unittest.skipUnless(os.environ.get("SUMO_HOME"), "requires a local SUMO installation")
 class EnvironmentTests(unittest.TestCase):
+    def test_controller_history_restarts_with_episode(self):
+        from phase_policy import LearnedPhaseController
+        from predictive_controller import PredictiveController
+        from unified_mdp_env import UnifiedMDPIntersectionEnv
+
+        env = UnifiedMDPIntersectionEnv(num_seconds=150, additional_sumo_cmd="--no-step-log")
+        try:
+            for controller in (LearnedPhaseController(), PredictiveController()):
+                traces = []
+                for _ in range(2):
+                    env.reset(seed=9)
+                    trace = []
+                    for step in range(30):
+                        action = controller.predict(env)
+                        self.assertTrue(env.get_action_mask()[action])
+                        _, _, _, _, info = env.step(action)
+                        trace.append((action, info["system_total_stopped"], info["step_throughput"]))
+                    traces.append(trace)
+                self.assertGreater(len({action for action, _, _ in traces[0]}), 1)
+                self.assertEqual(traces[0], traces[1])
+        finally:
+            env.close()
+
+    def test_network_sample_agrees_with_live_vehicle_queries(self):
+        from sumo_rl import SumoEnvironment
+        from unified_mdp_env import UnifiedMDPIntersectionEnv
+
+        env = UnifiedMDPIntersectionEnv(num_seconds=60, additional_sumo_cmd="--no-step-log")
+        try:
+            env.reset(seed=23)
+            for step in range(12):
+                _, _, _, _, info = env.step((step // 3) % 4)
+                direct = SumoEnvironment._get_system_info(env.env)
+                self.assertEqual({key: info[key] for key in direct}, direct)
+            self.assertGreater(info["system_mean_speed"], 0)
+        finally:
+            env.close()
+
     def test_native_program_and_arrivals_match_trip_log(self):
         from unified_mdp_env import UnifiedMDPIntersectionEnv
 
